@@ -15,13 +15,21 @@ import {
 } from '../types';
 import {
   INITIAL_PRODUCTS,
-  INITIAL_ORDERS,
   INITIAL_UPI_SETTINGS,
   INITIAL_BANNERS,
   INITIAL_STORE_CATEGORIES,
   INITIAL_SHIPPING_SETTINGS,
   INITIAL_HOMEPAGE_SECTIONS,
 } from '../data/initialData';
+import { db } from '../firebase';
+import {
+  collection,
+  doc,
+  setDoc,
+  deleteDoc,
+  onSnapshot,
+  writeBatch
+} from 'firebase/firestore';
 
 export type AppTab = 'home' | 'categories' | 'shop' | 'cart' | 'orders' | 'admin';
 
@@ -117,91 +125,25 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-// Secret Admin Password provided by user
+// Secret Admin Password
 const ADMIN_PASSWORD = 'UtsavNest#7vQ!29_NX@84$Lm';
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [themeMode, setThemeModeState] = useState<ThemeMode>(() => {
     try {
-      const stored = localStorage.getItem('utsavnest_theme_mode');
-      return (stored as ThemeMode) || 'normal';
+      return (localStorage.getItem('utsavnest_theme_mode') as ThemeMode) || 'normal';
     } catch {
       return 'normal';
     }
   });
 
-  const [banners, setBanners] = useState<Banner[]>(() => {
-    try {
-      const stored = localStorage.getItem('utsavnest_banners');
-      return stored ? JSON.parse(stored) : INITIAL_BANNERS;
-    } catch {
-      return INITIAL_BANNERS;
-    }
-  });
-
-  const [storeCategories, setStoreCategories] = useState<StoreCategory[]>(() => {
-    try {
-      const stored = localStorage.getItem('utsavnest_categories');
-      return stored ? JSON.parse(stored) : INITIAL_STORE_CATEGORIES;
-    } catch {
-      return INITIAL_STORE_CATEGORIES;
-    }
-  });
-
-  const [shippingSettings, setShippingSettings] = useState<ShippingSettings>(() => {
-    try {
-      const stored = localStorage.getItem('utsavnest_shipping');
-      return stored ? JSON.parse(stored) : INITIAL_SHIPPING_SETTINGS;
-    } catch {
-      return INITIAL_SHIPPING_SETTINGS;
-    }
-  });
-
-  const [homepageSections, setHomepageSections] = useState<HomepageSectionsConfig>(() => {
-    try {
-      const stored = localStorage.getItem('utsavnest_hp_sections');
-      return stored ? JSON.parse(stored) : INITIAL_HOMEPAGE_SECTIONS;
-    } catch {
-      return INITIAL_HOMEPAGE_SECTIONS;
-    }
-  });
-
-  const [products, setProducts] = useState<Product[]>(() => {
-    try {
-      const stored = localStorage.getItem('utsavnest_products');
-      return stored ? JSON.parse(stored) : INITIAL_PRODUCTS;
-    } catch {
-      return INITIAL_PRODUCTS;
-    }
-  });
-
-  const [orders, setOrders] = useState<Order[]>(() => {
-    try {
-      const stored = localStorage.getItem('utsavnest_orders');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed)) {
-          // Remove legacy demo/seed orders
-          const cleaned = parsed.filter(
-            (o: Order) => o && o.id !== 'UN-2026-9812' && o.id !== 'UN-2026-9790'
-          );
-          return cleaned;
-        }
-      }
-      return [];
-    } catch {
-      return [];
-    }
-  });
-
-  const [upiSettings, setUpiSettings] = useState<UPISettings>(() => {
-    try {
-      const stored = localStorage.getItem('utsavnest_upi');
-      return stored ? JSON.parse(stored) : INITIAL_UPI_SETTINGS;
-    } catch {
-      return INITIAL_UPI_SETTINGS;
-    }
-  });
+  const [banners, setBanners] = useState<Banner[]>(INITIAL_BANNERS);
+  const [storeCategories, setStoreCategories] = useState<StoreCategory[]>(INITIAL_STORE_CATEGORIES);
+  const [shippingSettings, setShippingSettings] = useState<ShippingSettings>(INITIAL_SHIPPING_SETTINGS);
+  const [homepageSections, setHomepageSections] = useState<HomepageSectionsConfig>(INITIAL_HOMEPAGE_SECTIONS);
+  const [products, setProducts] = useState<Product[]>(INITIAL_PRODUCTS);
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [upiSettings, setUpiSettingsState] = useState<UPISettings>(INITIAL_UPI_SETTINGS);
 
   const [cart, setCart] = useState<CartItem[]>(() => {
     try {
@@ -239,75 +181,64 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
   const [isAdminLoginModalOpen, setIsAdminLoginModalOpen] = useState<boolean>(false);
 
-  // Tap tracking for 7 quick taps within 2.5 seconds window
+  // Tap tracking
   const tapTimesRef = useRef<number[]>([]);
   const lastTapTimeRef = useRef<number>(0);
 
-  // LocalStorage synchronizations
+  // --- Real-time Firebase Listeners ---
   useEffect(() => {
-    try {
-      localStorage.setItem('utsavnest_theme_mode', themeMode);
-    } catch (e) {
-      console.error(e);
-    }
-  }, [themeMode]);
+    // 1. Products Sync
+    const unsubProducts = onSnapshot(collection(db, 'products'), (snapshot) => {
+      if (!snapshot.empty) {
+        const loaded: Product[] = [];
+        snapshot.forEach((docSnap) => loaded.push(docSnap.data() as Product));
+        setProducts(loaded);
+      } else {
+        // First-time database population
+        INITIAL_PRODUCTS.forEach((p) => {
+          setDoc(doc(db, 'products', p.id), p).catch(console.error);
+        });
+      }
+    }, (err) => console.error('Products sync error:', err));
 
-  useEffect(() => {
-    try {
-      localStorage.setItem('utsavnest_banners', JSON.stringify(banners));
-    } catch (e) {
-      console.error(e);
-    }
-  }, [banners]);
+    // 2. Orders Sync
+    const unsubOrders = onSnapshot(collection(db, 'orders'), (snapshot) => {
+      const loaded: Order[] = [];
+      snapshot.forEach((docSnap) => loaded.push(docSnap.data() as Order));
+      // Sort newest orders first
+      loaded.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      setOrders(loaded);
+    }, (err) => console.error('Orders sync error:', err));
 
-  useEffect(() => {
-    try {
-      localStorage.setItem('utsavnest_categories', JSON.stringify(storeCategories));
-    } catch (e) {
-      console.error(e);
-    }
-  }, [storeCategories]);
+    // 3. Settings Sync (Banners, Categories, UPI, Settings)
+    const unsubSettings = onSnapshot(doc(db, 'settings', 'global'), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data.banners) setBanners(data.banners);
+        if (data.categories) setStoreCategories(data.categories);
+        if (data.shipping) setShippingSettings(data.shipping);
+        if (data.sections) setHomepageSections(data.sections);
+        if (data.upi) setUpiSettingsState(data.upi);
+      } else {
+        // Initialize global settings
+        setDoc(doc(db, 'settings', 'global'), {
+          banners: INITIAL_BANNERS,
+          categories: INITIAL_STORE_CATEGORIES,
+          shipping: INITIAL_SHIPPING_SETTINGS,
+          sections: INITIAL_HOMEPAGE_SECTIONS,
+          upi: INITIAL_UPI_SETTINGS
+        }).catch(console.error);
+      }
+    }, (err) => console.error('Settings sync error:', err));
 
-  useEffect(() => {
-    try {
-      localStorage.setItem('utsavnest_shipping', JSON.stringify(shippingSettings));
-    } catch (e) {
-      console.error(e);
-    }
-  }, [shippingSettings]);
+    return () => {
+      unsubProducts();
+      unsubOrders();
+      unsubSettings();
+    };
+  }, []);
 
-  useEffect(() => {
-    try {
-      localStorage.setItem('utsavnest_hp_sections', JSON.stringify(homepageSections));
-    } catch (e) {
-      console.error(e);
-    }
-  }, [homepageSections]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('utsavnest_products', JSON.stringify(products));
-    } catch (e) {
-      console.error(e);
-    }
-  }, [products]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('utsavnest_orders', JSON.stringify(orders));
-    } catch (e) {
-      console.error(e);
-    }
-  }, [orders]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('utsavnest_upi', JSON.stringify(upiSettings));
-    } catch (e) {
-      console.error(e);
-    }
-  }, [upiSettings]);
-
+  // Local device sync for Cart & Wishlist
   useEffect(() => {
     try {
       localStorage.setItem('utsavnest_cart', JSON.stringify(cart));
@@ -326,6 +257,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const setThemeMode = (mode: ThemeMode) => {
     setThemeModeState(mode);
+    try {
+      localStorage.setItem('utsavnest_theme_mode', mode);
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const toggleWishlist = (productId: string) => {
@@ -372,90 +308,117 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const cartCount = cart.reduce((sum, item) => sum + item.quantity, 0);
   const cartSubtotal = cart.reduce((sum, item) => sum + item.product.price * item.quantity, 0);
 
-  const calculateShippingFee = (_subtotal: number): number => {
-    // UtsavNest provides FREE DELIVERY across all of India. Delivery fee is ALWAYS ₹0.
-    return 0;
+  const calculateShippingFee = (_subtotal: number): number => 0;
+
+  // Banners to Firestore
+  const updateBannersInFirestore = async (newBanners: Banner[]) => {
+    setBanners(newBanners);
+    try {
+      await setDoc(doc(db, 'settings', 'global'), { banners: newBanners }, { merge: true });
+    } catch (e) {
+      console.error('Failed to sync banners:', e);
+    }
   };
 
-  // Banners
   const addBanner = (bannerData: Omit<Banner, 'id' | 'orderIndex'>) => {
     const newBanner: Banner = {
       ...bannerData,
       id: `banner_${Date.now()}`,
       orderIndex: banners.length,
     };
-    setBanners((prev) => [...prev, newBanner]);
+    updateBannersInFirestore([...banners, newBanner]);
   };
 
   const updateBanner = (updated: Banner) => {
-    setBanners((prev) => prev.map((b) => (b.id === updated.id ? updated : b)));
+    const next = banners.map((b) => (b.id === updated.id ? updated : b));
+    updateBannersInFirestore(next);
   };
 
   const deleteBanner = (id: string) => {
-    setBanners((prev) => prev.filter((b) => b.id !== id));
+    const next = banners.filter((b) => b.id !== id);
+    updateBannersInFirestore(next);
   };
 
   const reorderBanners = (reordered: Banner[]) => {
-    setBanners(reordered);
+    updateBannersInFirestore(reordered);
   };
 
   const toggleBannerEnabled = (id: string) => {
-    setBanners((prev) =>
-      prev.map((b) => (b.id === id ? { ...b, enabled: !b.enabled } : b))
-    );
+    const next = banners.map((b) => (b.id === id ? { ...b, enabled: !b.enabled } : b));
+    updateBannersInFirestore(next);
   };
 
-  // Categories
+  // Categories to Firestore
+  const updateCategoriesInFirestore = async (newCats: StoreCategory[]) => {
+    setStoreCategories(newCats);
+    try {
+      await setDoc(doc(db, 'settings', 'global'), { categories: newCats }, { merge: true });
+    } catch (e) {
+      console.error('Failed to sync categories:', e);
+    }
+  };
+
   const addCategory = (catData: Omit<StoreCategory, 'id'>) => {
     const newCat: StoreCategory = {
       ...catData,
       id: `cat_${Date.now()}`,
     };
-    setStoreCategories((prev) => [...prev, newCat]);
+    updateCategoriesInFirestore([...storeCategories, newCat]);
   };
 
   const updateCategory = (updated: StoreCategory) => {
-    setStoreCategories((prev) =>
-      prev.map((c) => (c.id === updated.id ? updated : c))
-    );
+    const next = storeCategories.map((c) => (c.id === updated.id ? updated : c));
+    updateCategoriesInFirestore(next);
   };
 
   const deleteCategory = (id: string) => {
-    setStoreCategories((prev) => prev.filter((c) => c.id !== id));
+    const next = storeCategories.filter((c) => c.id !== id);
+    updateCategoriesInFirestore(next);
   };
 
   const toggleCategoryEnabled = (id: string) => {
-    setStoreCategories((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, enabled: !c.enabled } : c))
-    );
+    const next = storeCategories.map((c) => (c.id === id ? { ...c, enabled: !c.enabled } : c));
+    updateCategoriesInFirestore(next);
   };
 
   const reorderCategories = (reordered: StoreCategory[]) => {
-    setStoreCategories(reordered);
+    updateCategoriesInFirestore(reordered);
   };
 
-  // Sections & Shipping
-  const updateHomepageSections = (config: HomepageSectionsConfig) => {
+  // Settings to Firestore
+  const updateHomepageSections = async (config: HomepageSectionsConfig) => {
     setHomepageSections(config);
+    try {
+      await setDoc(doc(db, 'settings', 'global'), { sections: config }, { merge: true });
+    } catch (e) {
+      console.error('Failed to sync sections:', e);
+    }
   };
 
-  const updateShippingSettings = (settings: ShippingSettings) => {
+  const updateShippingSettings = async (settings: ShippingSettings) => {
     setShippingSettings(settings);
+    try {
+      await setDoc(doc(db, 'settings', 'global'), { shipping: settings }, { merge: true });
+    } catch (e) {
+      console.error('Failed to sync shipping settings:', e);
+    }
   };
 
-  // Hidden admin access: 7 quick taps within 2.5 seconds
+  const updateUpiSettings = async (settings: UPISettings) => {
+    setUpiSettingsState(settings);
+    try {
+      await setDoc(doc(db, 'settings', 'global'), { upi: settings }, { merge: true });
+    } catch (e) {
+      console.error('Failed to sync UPI settings:', e);
+    }
+  };
+
+  // Admin secret taps
   const triggerLogoTap = () => {
     const now = Date.now();
-    // Guard against duplicate synthetic events for the same contact
-    if (now - lastTapTimeRef.current < 60) {
-      return;
-    }
+    if (now - lastTapTimeRef.current < 60) return;
     lastTapTimeRef.current = now;
-
-    // Filter to taps strictly within the last 2500ms (2.5 seconds)
     tapTimesRef.current = [...tapTimesRef.current.filter((t) => now - t <= 2500), now];
-
-    // After 7 valid quick taps, immediately open the Admin Login modal
     if (tapTimesRef.current.length >= 7) {
       tapTimesRef.current = [];
       setIsAdminLoginModalOpen(true);
@@ -491,57 +454,74 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setActiveTab('home');
   };
 
-  // Product controls
-  const addProduct = (newProdData: Omit<Product, 'id'>) => {
+  // Products to Firestore
+  const addProduct = async (newProdData: Omit<Product, 'id'>) => {
+    const id = `prod_${Date.now()}`;
     const newProduct: Product = {
       ...newProdData,
-      id: `prod_${Date.now()}`,
+      id,
       enabled: newProdData.enabled !== false,
       stockQuantity: newProdData.stockQuantity ?? 20,
       rating: 5.0,
       reviewsCount: 1,
     };
-    setProducts((prev) => [newProduct, ...prev]);
+    try {
+      await setDoc(doc(db, 'products', id), newProduct);
+    } catch (e) {
+      console.error('Firestore addProduct error:', e);
+      setProducts((prev) => [newProduct, ...prev]);
+    }
   };
 
-  const updateProduct = (updated: Product) => {
-    setProducts((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+  const updateProduct = async (updated: Product) => {
+    try {
+      await setDoc(doc(db, 'products', updated.id), updated);
+    } catch (e) {
+      console.error('Firestore updateProduct error:', e);
+      setProducts((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+    }
     if (selectedProduct && selectedProduct.id === updated.id) {
       setSelectedProduct(updated);
     }
   };
 
-  const toggleProductEnabled = (productId: string) => {
-    setProducts((prev) =>
-      prev.map((p) => (p.id === productId ? { ...p, enabled: !(p.enabled !== false) } : p))
-    );
+  const toggleProductEnabled = async (productId: string) => {
+    const target = products.find((p) => p.id === productId);
+    if (!target) return;
+    const updated = { ...target, enabled: !(target.enabled !== false) };
+    try {
+      await setDoc(doc(db, 'products', productId), updated);
+    } catch (e) {
+      console.error('Firestore toggleProductEnabled error:', e);
+      setProducts((prev) => prev.map((p) => (p.id === productId ? updated : p)));
+    }
   };
 
-  const deleteProduct = (id: string) => {
-    setProducts((prev) => prev.filter((p) => p.id !== id));
+  const deleteProduct = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, 'products', id));
+    } catch (e) {
+      console.error('Firestore deleteProduct error:', e);
+      setProducts((prev) => prev.filter((p) => p.id !== id));
+    }
     setCart((prev) => prev.filter((item) => item.product.id !== id));
     if (selectedProduct?.id === id) {
       setSelectedProduct(null);
     }
   };
 
-  const updateUpiSettings = (settings: UPISettings) => {
-    setUpiSettings(settings);
-  };
-
+  // Orders to Firestore
   const placeOrder = (
     customer: CustomerDetails,
     paymentMethod: PaymentMethod = 'COD',
     paymentDetails?: { utr?: string; screenshot?: string },
     discount = 0
   ): Order => {
-    // Calculate subtotal accurately from each item (price * quantity)
     const itemsSubtotal = cart.reduce(
       (sum, item) => sum + (Number(item.product.price) || 0) * (Number(item.quantity) || 1),
       0
     );
     const validDiscount = Math.max(0, Number(discount) || 0);
-    // FREE delivery across India: deliveryFee is always 0
     const finalTotal = Math.max(0, itemsSubtotal - validDiscount);
 
     const newOrder: Order = {
@@ -565,14 +545,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           : 'Payment submitted via manual UPI. Awaiting merchant confirmation.',
     };
 
-    setOrders((prev) => {
-      const next = [newOrder, ...prev];
-      try {
-        localStorage.setItem('utsavnest_orders', JSON.stringify(next));
-      } catch (e) {
-        console.error('Failed to save orders to localStorage', e);
-      }
-      return next;
+    setDoc(doc(db, 'orders', newOrder.id), newOrder).catch((err) => {
+      console.error('Firestore placeOrder error:', err);
     });
 
     clearCart();
@@ -581,44 +555,38 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return newOrder;
   };
 
-  const updateOrderStatus = (orderId: string, status: OrderStatus, notes?: string) => {
-    setOrders((prev) => {
-      const updated = prev.map((order) =>
-        order.id === orderId
-          ? {
-              ...order,
-              status,
-              ...(notes !== undefined ? { statusNotes: notes } : {}),
-            }
-          : order
-      );
-      try {
-        localStorage.setItem('utsavnest_orders', JSON.stringify(updated));
-      } catch (e) {
-        console.error('Failed to persist order status to localStorage', e);
-      }
-      return updated;
-    });
-  };
-
-  const deleteOrder = (orderId: string) => {
-    setOrders((prev) => {
-      const next = prev.filter((o) => o.id !== orderId);
-      try {
-        localStorage.setItem('utsavnest_orders', JSON.stringify(next));
-      } catch (e) {
-        console.error('Failed to delete order from localStorage', e);
-      }
-      return next;
-    });
-  };
-
-  const resetOrders = () => {
-    setOrders([]);
+  const updateOrderStatus = async (orderId: string, status: OrderStatus, notes?: string) => {
+    const target = orders.find((o) => o.id === orderId);
+    if (!target) return;
+    const updated = {
+      ...target,
+      status,
+      ...(notes !== undefined ? { statusNotes: notes } : {})
+    };
     try {
-      localStorage.setItem('utsavnest_orders', JSON.stringify([]));
+      await setDoc(doc(db, 'orders', orderId), updated);
     } catch (e) {
-      console.error('Failed to reset orders in localStorage', e);
+      console.error('Firestore updateOrderStatus error:', e);
+    }
+  };
+
+  const deleteOrder = async (orderId: string) => {
+    try {
+      await deleteDoc(doc(db, 'orders', orderId));
+    } catch (e) {
+      console.error('Firestore deleteOrder error:', e);
+    }
+  };
+
+  const resetOrders = async () => {
+    try {
+      const batch = writeBatch(db);
+      orders.forEach((o) => {
+        batch.delete(doc(db, 'orders', o.id));
+      });
+      await batch.commit();
+    } catch (e) {
+      console.error('Firestore resetOrders error:', e);
     }
   };
 
